@@ -1,0 +1,65 @@
+name: Release AmazeyinBar
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag, e.g. v1.0.1"
+        required: true
+        default: "v1.0.0"
+      release_name:
+        description: "Optional release title"
+        required: false
+        default: ""
+
+jobs:
+  build-and-release:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build app bundle
+        run: |
+          chmod +x scripts/build-app.sh
+          ./scripts/build-app.sh
+
+      - name: Package app
+        run: |
+          cd dist
+          ditto -c -k --sequesterRsrc --keepParent AmazeyinBar.app AmazeyinBar-macos.zip
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG_NAME="${{ github.event.inputs.tag_name }}"
+            RELEASE_NAME="${{ github.event.inputs.release_name }}"
+          else
+            TAG_NAME="${GITHUB_REF_NAME}"
+            RELEASE_NAME=""
+          fi
+
+          if [ -z "$RELEASE_NAME" ]; then
+            RELEASE_NAME="AmazeyinBar ${TAG_NAME}"
+          fi
+
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "release_name=$RELEASE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag_name }}
+          name: ${{ steps.meta.outputs.release_name }}
+          files: dist/AmazeyinBar-macos.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false

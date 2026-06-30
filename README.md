@@ -1,32 +1,33 @@
-# GPT Usage Bar
+# AmazeyinBar
 
-一个运行在 macOS 状态栏中的小工具，用来显示多个 GPT 账号的用量。
+把账号用量、桌面提醒和自动化通知，收进 macOS 菜单栏。
+
+`AmazeyinBar` 是一个轻量、直接、日常可用的菜单栏小工具：
+- 一眼看到多个账号的 `5H / 7D` 用量
+- 支持 webhook 推送，把 Jenkins、脚本、内网任务的结果直接送到桌面
+- 支持从当前 Chrome 自动导入账号配置，尽量减少手工填 token 的麻烦
+
+它的目标不是“功能很多”，而是“每天都能顺手打开，而且真的省事”。
 
 ## 示例截图
 
 ![AmazeyinBar 示例界面](docs/amazeyinbar-sample.png)
 
-现在额度查询走的是 ChatGPT 官方侧接口：
+## 功能亮点
 
-- `GET https://chatgpt.com/backend-api/wham/usage`
+- 菜单栏直接查看多账号用量，不用反复切后台
+- 显示 `5H / 7D` 利用率、重置时间和剩余倒计时
+- 本地 webhook 接收器，适合 Jenkins / Shell / 自动化任务完成提醒
+- 支持系统原生通知
+- 支持手动刷新、重新加载配置、快速打开配置目录
+- 支持从当前 Chrome 导入 OpenAI / ChatGPT 相关账号配置
 
-不再依赖 `sub.amazeyin.com/api/v1/admin/accounts/:id/usage` 这类二次封装接口。
+## 适合谁
 
-现在也支持作为一个本地 webhook 接收器运行：
-
-- 其他服务向你的 Mac 发 HTTP 请求
-- App 在桌面弹出系统通知
-- 适合 Jenkins、脚本、内网服务、自动化任务完成后提醒
-
-## 已实现
-
-- 菜单栏显示多账号 5 小时或 7 天利用率
-- 下拉菜单展示每个账号的 5H / 7D 利用率和重置时间
-- 定时自动刷新
-- 配置文件外置，不把 token 写进源码
-- 一键重新加载配置与手动刷新
-- 从当前 Chrome 的 Sub2API 后台导入 OpenAI OAuth 凭证，并直接查询 ChatGPT backend-api
-- 本地监听 webhook 并在 macOS 桌面弹通知
+- 想在菜单栏里快速盯用量的人
+- 有多账号切换场景的人
+- 想把“构建完成 / 脚本执行完 / 服务状态变化”直接弹到桌面的人
+- 不想维护复杂后台，只想要一个本地可跑的小工具的人
 
 ## 本地运行
 
@@ -35,11 +36,11 @@ cd /Users/yin/tools/codex-workspace/amazeyin/gpt-usage-menubar
 swift run GPTUsageBar
 ```
 
-首次启动会自动生成配置文件：
+首次启动后会生成配置文件：
 
 `~/Library/Application Support/GPTUsageBar/config.json`
 
-## 打包成 `.app`
+## 打包成 App
 
 ```bash
 cd /Users/yin/tools/codex-workspace/amazeyin/gpt-usage-menubar
@@ -48,20 +49,69 @@ chmod +x scripts/build-app.sh
 open dist/AmazeyinBar.app
 ```
 
-## 更新 App 图标
+## 自动构建 Release
+
+仓库已包含 GitHub Actions 自动发布流程：
+
+- 推送 tag，例如 `v1.0.0`
+- GitHub Actions 会自动在 macOS runner 上构建 `.app`
+- 自动打包成 `AmazeyinBar-macos.zip`
+- 自动创建 / 更新 GitHub Release 并上传产物
+
+推荐发布方式：
 
 ```bash
-cd /Users/yin/tools/codex-workspace/amazeyin/gpt-usage-menubar
-chmod +x scripts/make-icon.sh
-./scripts/make-icon.sh /path/to/icon-source.jpg
-./scripts/build-app.sh
+git tag v1.0.0
+git push origin v1.0.0
 ```
+
+你也可以在 GitHub Actions 页面手动触发发布流程。
+
+## Webhook 通知
+
+默认 webhook 地址格式：
+
+`http://你的Mac局域网IP:8787/notify?token=你的token`
+
+示例：
+
+```bash
+curl -X POST "http://你的Mac局域网IP:8787/notify?token=你的token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Jenkins",
+    "subtitle": "构建完成",
+    "message": "deploy-prod 执行成功"
+  }'
+```
+
+也支持纯文本：
+
+```bash
+curl -X POST "http://你的Mac局域网IP:8787/notify?token=你的token" \
+  -H "Content-Type: text/plain; charset=utf-8" \
+  -d '任务完成'
+```
+
+支持字段：
+
+- `title`
+- `subtitle`
+- `message` 或 `body`
+- `sound`
+
+支持认证方式：
+
+- Query：`?token=xxx`
+- Header：`token: xxx`
+- Header：`Authorization: Bearer xxx`
 
 ## 从当前 Chrome 自动导入账号
 
 前提：
-- 你已经在 Chrome 登录 `sub.amazeyin.com`
-- 当前打开着 `https://sub.amazeyin.com/admin/accounts`
+
+- 你已经在 Chrome 登录目标后台
+- 当前打开着账号管理页
 - Chrome 允许远程调试连接
 
 执行：
@@ -76,12 +126,6 @@ node ./scripts/import-from-chrome.mjs
 ```bash
 node ./scripts/import-from-chrome.mjs --dry-run
 ```
-
-这个脚本/应用内导入会自动：
-- 从当前账号管理页抓取账号列表
-- 从页面真实请求里抓取当前 admin `authorization`
-- 调用 Sub2API 管理端导出接口获取每个 OpenAI OAuth 账号的 `access_token` / `chatgpt_account_id`
-- 把可直接查询 ChatGPT 的账号写入 `~/Library/Application Support/GPTUsageBar/config.json`
 
 ## 配置示例
 
@@ -105,69 +149,18 @@ node ./scripts/import-from-chrome.mjs --dry-run
       "chatgptAccountId": "替换成 chatgpt account id",
       "fedRAMP": false,
       "enabled": true
-    },
-    {
-      "id": 8,
-      "name": "备用号",
-      "baseURL": "https://sub.amazeyin.com",
-      "accessToken": "替换成 OpenAI access token",
-      "chatgptAccountId": "替换成 chatgpt account id",
-      "fedRAMP": false,
-      "enabled": true
     }
   ]
 }
 ```
 
-## Webhook 用法
+## 项目结构
 
-默认 webhook 地址格式：
+- `Sources/GPTUsageBarApp/`: Swift 源码
+- `scripts/build-app.sh`: 打包 `.app`
+- `scripts/import-from-chrome.mjs`: 从 Chrome 导入配置
+- `docs/`: 文档和示例截图
 
-`http://你的Mac局域网IP:8787/notify?token=你的token`
+## 一句话总结
 
-推荐请求体：
-
-```bash
-curl -X POST "http://你的Mac局域网IP:8787/notify?token=你的token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "Jenkins",
-    "subtitle": "构建完成",
-    "message": "deploy-prod 执行成功"
-  }'
-```
-
-也支持更简单的纯文本：
-
-```bash
-curl -X POST "http://你的Mac局域网IP:8787/notify?token=你的token" \
-  -H "Content-Type: text/plain; charset=utf-8" \
-  -d '任务完成'
-```
-
-支持的字段：
-
-- `title`: 通知标题
-- `subtitle`: 通知副标题
-- `message` 或 `body`: 通知正文
-- `sound`: 是否播放声音，默认 `true`
-
-认证方式支持三种，任选其一：
-
-- Query：`?token=xxx`
-- Header：`token: xxx`
-- Header：`Authorization: Bearer xxx`
-
-健康检查：
-
-```bash
-curl "http://你的Mac局域网IP:8787/notify?token=你的token"
-```
-
-旧版只有 `authorization` 的配置还能被读取，但已经不能直接查额度；重新执行一次“从当前 Chrome 导入账号”就会补齐新字段。
-
-## 菜单栏标题模式
-
-- `fiveHour`: 每个账号显示 5 小时利用率
-- `sevenDay`: 每个账号显示 7 天利用率
-- `compact`: 只显示成功获取到数据的账号数量
+`AmazeyinBar` 不是一个“看起来很厉害”的工具，它更像一个每天都能替你省几次点击的小助手。
