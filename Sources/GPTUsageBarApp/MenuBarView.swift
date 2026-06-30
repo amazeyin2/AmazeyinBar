@@ -100,7 +100,12 @@ struct MenuBarView: View {
                 Task { await usageStore.reloadConfiguration() }
             }
 
-            HoverActionButton("从当前 Chrome 导入账号") {
+            HoverActionButton("从剪贴板 cURL 导入 ChatGPT 账号") {
+                Task { await usageStore.importFromClipboardCurl() }
+            }
+            .disabled(usageStore.isImporting)
+
+            HoverActionButton("从当前 Chrome 页面导入账号") {
                 Task { await usageStore.importFromChrome() }
             }
             .disabled(usageStore.isImporting)

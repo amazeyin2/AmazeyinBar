@@ -24,14 +24,32 @@ struct ChromeImportService {
         }
 
         try await cdp.connect()
-        let targetId = try await cdp.findTargetID(matching: targetURL)
-        let sessionId = try await cdp.attach(to: targetId)
-        let captured = try await cdp.captureAccountsAndAuthorization(sessionId: sessionId)
+        do {
+            let targetId = try await cdp.findTargetID(matching: targetURL)
+            let sessionId = try await cdp.attach(to: targetId)
+            let captured = try await cdp.captureAccountsAndAuthorization(sessionId: sessionId)
 
-        let baseURL = try normalizedBaseURL(from: targetURL)
-        let importedAccounts = try await buildAccounts(from: captured, config: config, baseURL: baseURL)
+            let baseURL = try normalizedBaseURL(from: targetURL)
+            let importedAccounts = try await buildAccounts(from: captured, config: config, baseURL: baseURL)
+            return ChromeImportSummary(importedAccounts: importedAccounts)
+        } catch ChromeImportError.targetPageNotFound {
+            return try await importFromChatGPT(using: cdp)
+        } catch ChromeImportError.accountListNotFound {
+            return try await importFromChatGPT(using: cdp)
+        } catch ChromeImportError.decodeFailed {
+            return try await importFromChatGPT(using: cdp)
+        }
+    }
 
-        return ChromeImportSummary(importedAccounts: importedAccounts)
+    private func importFromChatGPT(using cdp: CDPClient) async throws -> ChromeImportSummary {
+        let chatGPTTargetID = try await cdp.findTargetID(matchingAny: [
+            "https://chatgpt.com",
+            "https://chat.openai.com",
+        ])
+        let sessionId = try await cdp.attach(to: chatGPTTargetID)
+        let captured = try await cdp.captureChatGPTCredentials(sessionId: sessionId)
+        let account = importedChatGPTAccount(from: captured)
+        return ChromeImportSummary(importedAccounts: [account])
     }
 
     private func normalizedBaseURL(from urlString: String) throws -> String {
@@ -131,6 +149,33 @@ struct ChromeImportService {
         ]
         return components?.url
     }
+
+    private func importedChatGPTAccount(from captured: CapturedChatGPTCredentials) -> AccountConfig {
+        let claims = ChatGPTJWTClaims(token: captured.accessToken)
+        let accountID = captured.chatGPTAccountID ?? claims.chatGPTAccountID ?? "chatgpt-web"
+        return AccountConfig(
+            id: stableAccountID(from: accountID),
+            name: claims.preferredDisplayName(fallbackAccountID: accountID),
+            baseURL: captured.baseURL,
+            timezone: "Asia/Shanghai",
+            source: "chatgpt-web",
+            authorization: captured.authorization,
+            cookie: captured.cookie.isEmpty ? nil : captured.cookie,
+            accessToken: captured.accessToken,
+            chatGPTAccountID: accountID,
+            fedRAMP: claims.fedRAMP,
+            enabled: true
+        )
+    }
+
+    private func stableAccountID(from accountID: String) -> Int {
+        var hash: UInt32 = 2_166_136_261
+        for byte in accountID.utf8 {
+            hash ^= UInt32(byte)
+            hash = hash &* 16_777_619
+        }
+        return Int(hash & 0x7fff_ffff)
+    }
 }
 
 private struct ImportedOpenAICredentials {
@@ -143,6 +188,14 @@ private struct CapturedAccountsPayload {
     let authorization: String
     let cookie: String
     let accounts: [ImportedRemoteAccount]
+}
+
+private struct CapturedChatGPTCredentials {
+    let baseURL: String
+    let authorization: String
+    let accessToken: String
+    let chatGPTAccountID: String?
+    let cookie: String
 }
 
 private struct ImportedRemoteAccount: Decodable {
@@ -230,11 +283,14 @@ enum ChromeImportError: LocalizedError {
     case decodeFailed
     case accountExportFailed(String)
     case openAICredentialsNotFound
+    case chatGPTCredentialRequestNotFound
+    case chatGPTAuthorizationNotFound
+    case chatGPTAccountIDNotFound
 
     var errorDescription: String? {
         switch self {
         case .debuggerPortFileMissing:
-            "没找到 Chrome 调试端口。先确保 Chrome 已开启远程调试并打开账号管理页。"
+            "没找到 Chrome 调试端口。先确保 Chrome 已开启远程调试，并打开账号后台页或 chatgpt.com。"
         case .invalidDebuggerPort:
             "Chrome 调试端口信息无效。"
         case .invalidTargetURL(let value):
@@ -251,6 +307,12 @@ enum ChromeImportError: LocalizedError {
             message
         case .openAICredentialsNotFound:
             "没有导入到可直接查询 ChatGPT 的 OpenAI OAuth 凭证，请确认这些账号已完整授权。"
+        case .chatGPTCredentialRequestNotFound:
+            "没抓到 chatgpt.com 的有效业务请求。先打开 ChatGPT 对话页并发一条消息再试。"
+        case .chatGPTAuthorizationNotFound:
+            "抓到了 chatgpt.com 页面，但没拿到 Bearer Token。先在当前页面触发一次真实对话请求再试。"
+        case .chatGPTAccountIDNotFound:
+            "拿到了 ChatGPT Token，但没解析出 chatgpt-account-id。换一条 conversation 请求再试。"
         }
     }
 }
@@ -306,6 +368,18 @@ private actor CDPClient {
             return targetId
         }
         throw ChromeImportError.targetPageNotFound(urlPrefix)
+    }
+
+    func findTargetID(matchingAny urlPrefixes: [String]) async throws -> String {
+        let result = try await send(method: "Target.getTargets")
+        let targets = result["targetInfos"] as? [[String: Any]] ?? []
+        if let matched = targets.first(where: { target in
+            guard (target["type"] as? String) == "page", let url = target["url"] as? String else { return false }
+            return urlPrefixes.contains(where: { url.hasPrefix($0) })
+        }), let targetId = matched["targetId"] as? String {
+            return targetId
+        }
+        throw ChromeImportError.targetPageNotFound(urlPrefixes.joined(separator: ", "))
     }
 
     func attach(to targetId: String) async throws -> String {
@@ -399,6 +473,65 @@ private actor CDPClient {
             cookie: authEvents.last?.cookie ?? "",
             accounts: accounts
         )
+    }
+
+    func captureChatGPTCredentials(sessionId: String) async throws -> CapturedChatGPTCredentials {
+        let stream = eventStream()
+        _ = try await send(method: "Page.enable", sessionId: sessionId)
+        _ = try await send(method: "Network.enable", sessionId: sessionId)
+        _ = try await send(method: "Runtime.enable", sessionId: sessionId)
+
+        var matchedCredential: CapturedChatGPTCredentials?
+
+        let collector = Task {
+            for await eventData in stream {
+                guard
+                    let event = try? JSONSerialization.jsonObject(with: eventData) as? [String: Any],
+                    event["sessionId"] as? String == sessionId
+                else { continue }
+
+                let method = event["method"] as? String ?? ""
+                let params = event["params"] as? [String: Any] ?? [:]
+
+                guard method == "Network.requestWillBeSentExtraInfo" else { continue }
+                let headers = lowercasedHeaders(params["headers"] as? [String: Any] ?? [:])
+                guard let authorization = headers["authorization"], authorization.lowercased().hasPrefix("bearer ") else {
+                    continue
+                }
+
+                let accessToken = String(authorization.dropFirst(7)).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !accessToken.isEmpty else { continue }
+
+                let associatedCookies = headers["cookie"] ?? ""
+                let accountID = headers["chatgpt-account-id"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+                matchedCredential = CapturedChatGPTCredentials(
+                    baseURL: "https://chatgpt.com",
+                    authorization: authorization,
+                    accessToken: accessToken,
+                    chatGPTAccountID: accountID?.isEmpty == false ? accountID : nil,
+                    cookie: associatedCookies
+                )
+            }
+        }
+
+        defer {
+            collector.cancel()
+        }
+
+        _ = try await send(method: "Page.reload", params: ["ignoreCache": false], sessionId: sessionId)
+        try await Task.sleep(for: .seconds(5))
+
+        guard let matchedCredential else {
+            throw ChromeImportError.chatGPTCredentialRequestNotFound
+        }
+        if matchedCredential.authorization.isEmpty {
+            throw ChromeImportError.chatGPTAuthorizationNotFound
+        }
+        let claims = ChatGPTJWTClaims(token: matchedCredential.accessToken)
+        guard matchedCredential.chatGPTAccountID != nil || claims.chatGPTAccountID != nil else {
+            throw ChromeImportError.chatGPTAccountIDNotFound
+        }
+        return matchedCredential
     }
 
     private func lowercasedHeaders(_ headers: [String: Any]) -> [String: String] {
@@ -503,5 +636,48 @@ private actor CDPClient {
 
     private func removeEventContinuation(id: UUID) {
         eventContinuations.removeValue(forKey: id)
+    }
+}
+
+private struct ChatGPTJWTClaims {
+    let email: String?
+    let chatGPTAccountID: String?
+    let fedRAMP: Bool
+
+    init(token: String) {
+        let parts = token.split(separator: ".")
+        guard parts.count >= 2,
+              let payloadData = Self.base64URLDecode(String(parts[1])),
+              let json = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any]
+        else {
+            email = nil
+            chatGPTAccountID = nil
+            fedRAMP = false
+            return
+        }
+
+        let profile = json["https://api.openai.com/profile"] as? [String: Any]
+        email = profile?["email"] as? String
+
+        let auth = json["https://api.openai.com/auth"] as? [String: Any]
+        chatGPTAccountID = auth?["chatgpt_account_id"] as? String
+        fedRAMP = auth?["chatgpt_account_is_fedramp"] as? Bool ?? false
+    }
+
+    func preferredDisplayName(fallbackAccountID: String) -> String {
+        if let email, !email.isEmpty {
+            let user = email.split(separator: "@").first.map(String.init) ?? email
+            return "ChatGPT \(user)"
+        }
+        return "ChatGPT \(String(fallbackAccountID.prefix(8)))"
+    }
+
+    private static func base64URLDecode(_ string: String) -> Data? {
+        var value = string.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        let remainder = value.count % 4
+        if remainder != 0 {
+            value += String(repeating: "=", count: 4 - remainder)
+        }
+        return Data(base64Encoded: value)
     }
 }

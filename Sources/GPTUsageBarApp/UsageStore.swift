@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -13,16 +14,19 @@ final class UsageStore: ObservableObject {
     private let configStore: ConfigStore
     private let service: UsageService
     private let chromeImportService: ChromeImportService
+    private let curlImportService: CurlImportService
     private var refreshTask: Task<Void, Never>?
 
     init(
         configStore: ConfigStore,
         service: UsageService = UsageService(),
-        chromeImportService: ChromeImportService = ChromeImportService()
+        chromeImportService: ChromeImportService = ChromeImportService(),
+        curlImportService: CurlImportService = CurlImportService()
     ) {
         self.configStore = configStore
         self.service = service
         self.chromeImportService = chromeImportService
+        self.curlImportService = curlImportService
         syncAccountsFromConfig()
         startAutoRefresh()
     }
@@ -87,19 +91,36 @@ final class UsageStore: ObservableObject {
     }
 
     func importFromChrome() async {
+        await importAccounts {
+            let summary = try await chromeImportService.importAccounts(using: configStore.config)
+            return summary.importedAccounts
+        }
+    }
+
+    func importFromClipboardCurl() async {
+        await importAccounts {
+            guard let text = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !text.isEmpty else {
+                throw CurlImportError.clipboardEmpty
+            }
+            return try curlImportService.importAccounts(from: text).importedAccounts
+        }
+    }
+
+    private func importAccounts(_ loader: () async throws -> [AccountConfig]) async {
         isImporting = true
         lastError = nil
         lastImportMessage = nil
         defer { isImporting = false }
 
         do {
-            let summary = try await chromeImportService.importAccounts(using: configStore.config)
             var nextConfig = configStore.config
-            nextConfig.accounts = mergeAccounts(existing: nextConfig.accounts, imported: summary.importedAccounts)
+            let importedAccounts = try await loader()
+            nextConfig.accounts = mergeAccounts(existing: nextConfig.accounts, imported: importedAccounts)
             try configStore.save(nextConfig)
             syncAccountsFromConfig()
             startAutoRefresh()
-            lastImportMessage = "已导入 \(summary.importedCount) 个账号"
+            lastImportMessage = "已导入 \(importedAccounts.count) 个账号"
             await refresh(forceReloadConfig: false)
         } catch {
             lastError = error.localizedDescription
