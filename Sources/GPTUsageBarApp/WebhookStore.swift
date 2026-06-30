@@ -3,7 +3,7 @@ import Combine
 import Foundation
 import Network
 import SwiftUI
-import UserNotifications
+@preconcurrency import UserNotifications
 
 @MainActor
 final class WebhookStore: NSObject, ObservableObject {
