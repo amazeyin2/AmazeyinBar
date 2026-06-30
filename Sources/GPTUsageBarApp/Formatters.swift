@@ -44,4 +44,19 @@ enum AppFormatters {
             return numberString(value)
         }
     }
+
+    static func countdownString(seconds: Int) -> String {
+        let totalMinutes = max(seconds, 0) / 60
+        let days = totalMinutes / (24 * 60)
+        let hours = (totalMinutes % (24 * 60)) / 60
+        let minutes = totalMinutes % 60
+
+        if days > 0 {
+            return "\(days)d\(hours)h\(minutes)m"
+        }
+        if hours > 0 {
+            return "\(hours)h\(minutes)m"
+        }
+        return "\(minutes)m"
+    }
 }

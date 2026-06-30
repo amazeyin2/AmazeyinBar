@@ -43,7 +43,7 @@ struct MenuBarView: View {
             actionButtons
         }
         .padding(12)
-        .frame(width: 336)
+        .frame(width: 308)
     }
 
     private var header: some View {
@@ -274,10 +274,14 @@ private struct AccountSection: View {
                     .foregroundStyle(.black)
             }
 
-            Text("重置 \(AppFormatters.dateTime.string(from: window.resetsAt))")
-                .font(.caption2)
-                .foregroundStyle(.black)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("重置 \(AppFormatters.dateTime.string(from: window.resetsAt))")
+                Text(AppFormatters.countdownString(seconds: window.remainingSeconds))
+                    .foregroundStyle(Color(red: 0.35, green: 0.35, blue: 0.38))
+            }
+            .font(.caption2)
+            .foregroundStyle(.black)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 8)

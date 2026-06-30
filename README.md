@@ -2,6 +2,10 @@
 
 一个运行在 macOS 状态栏中的小工具，用来显示多个 GPT 账号的用量。
 
+## 示例截图
+
+![AmazeyinBar 示例界面](docs/amazeyinbar-sample.png)
+
 现在额度查询走的是 ChatGPT 官方侧接口：
 
 - `GET https://chatgpt.com/backend-api/wham/usage`
