@@ -246,7 +246,6 @@ final class WebhookStore: NSObject, ObservableObject {
         do {
             try await notificationCenter.add(request)
             log("Notification queued: \(payload.title)")
-            scheduleDeliveredNotificationRemoval(identifier: identifier)
         } catch {
             log("Notification queue failed: \(error.localizedDescription)")
         }
@@ -278,13 +277,6 @@ final class WebhookStore: NSObject, ObservableObject {
             return
         }
         NSWorkspace.shared.open(url)
-    }
-
-    private func scheduleDeliveredNotificationRemoval(identifier: String) {
-        Task { [notificationCenter] in
-            try? await Task.sleep(for: .seconds(6))
-            notificationCenter.removeDeliveredNotifications(withIdentifiers: [identifier])
-        }
     }
 
     private func refreshAuthorizationStatus() async {
@@ -357,7 +349,7 @@ extension WebhookStore: UNUserNotificationCenterDelegate {
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        [.banner, .sound]
+        [.banner, .list, .sound]
     }
 }
 
