@@ -7,12 +7,9 @@ struct ChromeImportSummary {
 }
 
 struct ChromeImportService {
-    private let session: URLSession
     private let decoder = JSONDecoder()
 
-    init(session: URLSession = .shared) {
-        self.session = session
-    }
+    init() {}
 
     func importAccounts(using config: AppConfig) async throws -> ChromeImportSummary {
         let targetURL = config.importOptions?.chromeAccountsURL ?? "https://sub.amazeyin.com/admin/accounts"
@@ -30,7 +27,13 @@ struct ChromeImportService {
             let captured = try await cdp.captureAccountsAndAuthorization(sessionId: sessionId)
 
             let baseURL = try normalizedBaseURL(from: targetURL)
-            let importedAccounts = try await buildAccounts(from: captured, config: config, baseURL: baseURL)
+            let importedAccounts = try await buildAccounts(
+                from: captured,
+                config: config,
+                baseURL: baseURL,
+                cdp: cdp,
+                sessionId: sessionId
+            )
             return ChromeImportSummary(importedAccounts: importedAccounts)
         } catch ChromeImportError.targetPageNotFound {
             return try await importFromChatGPT(using: cdp)
@@ -59,7 +62,13 @@ struct ChromeImportService {
         return "\(scheme)://\(host)"
     }
 
-    private func buildAccounts(from captured: CapturedAccountsPayload, config: AppConfig, baseURL: String) async throws -> [AccountConfig] {
+    private func buildAccounts(
+        from captured: CapturedAccountsPayload,
+        config: AppConfig,
+        baseURL: String,
+        cdp: CDPClient,
+        sessionId: String
+    ) async throws -> [AccountConfig] {
         let includePlatforms = Set((config.importOptions?.includePlatforms ?? ["openai"]).map { $0.lowercased() })
         let includeDisabled = config.importOptions?.includeDisabledAccounts ?? false
         let visibleAccounts = captured.accounts
@@ -68,7 +77,13 @@ struct ChromeImportService {
 
         var imported: [AccountConfig] = []
         for account in visibleAccounts {
-            guard let secrets = try await fetchSecrets(for: account.id, baseURL: baseURL, captured: captured) else {
+            guard let secrets = try await fetchSecrets(
+                for: account.id,
+                baseURL: baseURL,
+                captured: captured,
+                cdp: cdp,
+                sessionId: sessionId
+            ) else {
                 continue
             }
             imported.append(
@@ -95,30 +110,23 @@ struct ChromeImportService {
         return imported.sorted { $0.id < $1.id }
     }
 
-    private func fetchSecrets(for accountID: Int, baseURL: String, captured: CapturedAccountsPayload) async throws -> ImportedOpenAICredentials? {
-        guard let url = exportAccountURL(baseURL: baseURL, accountID: accountID) else {
-            throw ChromeImportError.invalidTargetURL(baseURL)
-        }
+    private func fetchSecrets(
+        for accountID: Int,
+        baseURL: String,
+        captured: CapturedAccountsPayload,
+        cdp: CDPClient,
+        sessionId: String
+    ) async throws -> ImportedOpenAICredentials? {
+        let body = try await cdp.fetchAccountExport(
+            accountID: accountID,
+            baseURL: baseURL,
+            authorization: captured.authorization,
+            sessionId: sessionId
+        )
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "accept")
-        request.setValue("zh", forHTTPHeaderField: "accept-language")
-        request.setValue(captured.authorization, forHTTPHeaderField: "authorization")
-        request.setValue("\(baseURL)/admin/accounts", forHTTPHeaderField: "referer")
-        if !captured.cookie.isEmpty {
-            request.setValue(captured.cookie, forHTTPHeaderField: "cookie")
+        guard let data = body.data(using: .utf8) else {
+            throw ChromeImportError.accountExportFailed("账号 #\(accountID) 导出结果不是有效文本")
         }
-
-        let (data, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw ChromeImportError.accountExportFailed("账号 #\(accountID) 响应无效")
-        }
-        guard (200 ..< 300).contains(httpResponse.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw ChromeImportError.accountExportFailed("账号 #\(accountID) 导出失败: HTTP \(httpResponse.statusCode) \(body)")
-        }
-
         let envelope = try decoder.decode(AccountExportEnvelope.self, from: data)
         guard envelope.code == 0, let account = envelope.data?.accounts.first else {
             throw ChromeImportError.accountExportFailed("账号 #\(accountID) 导出结果为空")
@@ -138,16 +146,6 @@ struct ChromeImportService {
             chatGPTAccountID: chatGPTAccountID,
             fedRAMP: account.credentials.boolValue(for: "chatgpt_account_is_fedramp")
         )
-    }
-
-    private func exportAccountURL(baseURL: String, accountID: Int) -> URL? {
-        var components = URLComponents(string: baseURL)
-        components?.path = "/api/v1/admin/accounts/data"
-        components?.queryItems = [
-            URLQueryItem(name: "ids", value: String(accountID)),
-            URLQueryItem(name: "include_proxies", value: "false"),
-        ]
-        return components?.url
     }
 
     private func importedChatGPTAccount(from captured: CapturedChatGPTCredentials) -> AccountConfig {
@@ -532,6 +530,73 @@ private actor CDPClient {
             throw ChromeImportError.chatGPTAccountIDNotFound
         }
         return matchedCredential
+    }
+
+    func fetchAccountExport(
+        accountID: Int,
+        baseURL: String,
+        authorization: String,
+        sessionId: String
+    ) async throws -> String {
+        guard var components = URLComponents(string: baseURL) else {
+            throw ChromeImportError.invalidTargetURL(baseURL)
+        }
+        components.path = "/api/v1/admin/accounts/data"
+        components.queryItems = [
+            URLQueryItem(name: "ids", value: String(accountID)),
+            URLQueryItem(name: "include_proxies", value: "false"),
+        ]
+        guard let url = components.url else {
+            throw ChromeImportError.invalidTargetURL(baseURL)
+        }
+
+        let requestPayload: [String: String] = [
+            "url": url.absoluteString,
+            "authorization": authorization,
+        ]
+        let payloadData = try JSONSerialization.data(withJSONObject: requestPayload)
+        let payloadJSON = String(decoding: payloadData, as: UTF8.self)
+        let expression = """
+        (async () => {
+            const request = \(payloadJSON);
+            const response = await fetch(request.url, {
+                method: "GET",
+                credentials: "include",
+                headers: {
+                    "accept": "application/json, text/plain, */*",
+                    "accept-language": "zh",
+                    "authorization": request.authorization,
+                    "x-admin-ui-request": "1"
+                }
+            });
+            return JSON.stringify({ status: response.status, body: await response.text() });
+        })()
+        """
+
+        let evaluated = try await send(
+            method: "Runtime.evaluate",
+            params: [
+                "expression": expression,
+                "awaitPromise": true,
+                "returnByValue": true,
+            ],
+            sessionId: sessionId
+        )
+        guard
+            let result = evaluated["result"] as? [String: Any],
+            let rawValue = result["value"] as? String,
+            let data = rawValue.data(using: .utf8),
+            let response = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let status = (response["status"] as? NSNumber)?.intValue,
+            let body = response["body"] as? String
+        else {
+            throw ChromeImportError.accountExportFailed("账号 #\(accountID) 浏览器导出响应无效")
+        }
+
+        guard (200 ..< 300).contains(status) else {
+            throw ChromeImportError.accountExportFailed("账号 #\(accountID) 导出失败: HTTP \(status) \(body)")
+        }
+        return body
     }
 
     private func lowercasedHeaders(_ headers: [String: Any]) -> [String: String] {

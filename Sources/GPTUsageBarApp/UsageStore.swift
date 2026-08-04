@@ -144,25 +144,20 @@ final class UsageStore: ObservableObject {
         }
     }
 
-    func statusRingItems(limit: Int = 2) -> [StatusRingItem] {
+    func statusUsageItems(limit: Int = 2) -> [StatusUsageItem] {
         let mode = configStore.config.titleMode
-        return Array(accountStates.prefix(limit)).map { state in
-            let utilization: Int
+        return Array(accountStates.prefix(limit)).flatMap { state in
             switch mode {
             case .fiveHour:
-                utilization = state.payload?.fiveHour.utilization ?? 0
+                [statusItem(for: state, window: .fiveHour)]
             case .sevenDay:
-                utilization = state.payload?.sevenDay.utilization ?? 0
+                [statusItem(for: state, window: .sevenDay)]
             case .compact:
-                utilization = state.payload?.fiveHour.utilization ?? 0
+                [
+                    statusItem(for: state, window: .fiveHour),
+                    statusItem(for: state, window: .sevenDay),
+                ]
             }
-
-            return StatusRingItem(
-                id: state.id,
-                label: state.account.name.shortMenuLabel,
-                utilization: utilization,
-                hasError: state.errorMessage != nil
-            )
         }
     }
 
@@ -188,6 +183,23 @@ final class UsageStore: ObservableObject {
         accountStates.first { $0.account.id == account.id }
     }
 
+    private func statusItem(for state: AccountUsageState, window: StatusUsageItem.Window) -> StatusUsageItem {
+        let utilization: Int?
+        switch window {
+        case .fiveHour:
+            utilization = state.payload?.fiveHour.utilization
+        case .sevenDay:
+            utilization = state.payload?.sevenDay.utilization
+        }
+
+        return StatusUsageItem(
+            id: "\(state.id)-\(window.rawValue)",
+            window: window,
+            utilization: utilization,
+            hasError: state.errorMessage != nil
+        )
+    }
+
     private func mergeAccounts(existing: [AccountConfig], imported: [AccountConfig]) -> [AccountConfig] {
         var merged = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
         for account in imported {
@@ -197,10 +209,15 @@ final class UsageStore: ObservableObject {
     }
 }
 
-struct StatusRingItem: Identifiable {
-    let id: Int
-    let label: String
-    let utilization: Int
+struct StatusUsageItem: Identifiable {
+    enum Window: String {
+        case fiveHour
+        case sevenDay
+    }
+
+    let id: String
+    let window: Window
+    let utilization: Int?
     let hasError: Bool
 }
 

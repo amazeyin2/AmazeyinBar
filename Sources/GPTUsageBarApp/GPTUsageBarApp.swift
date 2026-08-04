@@ -40,7 +40,7 @@ private struct StatusBarLabelView: View {
     @EnvironmentObject private var usageStore: UsageStore
 
     var body: some View {
-        let items = usageStore.statusRingItems(limit: 2)
+        let items = usageStore.statusUsageItems(limit: 2)
         let hiddenCount = usageStore.hiddenStatusRingCount(limit: 2)
 
         if items.isEmpty {
@@ -64,7 +64,7 @@ private struct StatusBarLabelView: View {
 }
 
 private enum StatusBarRenderer {
-    static func render(items: [StatusRingItem]) -> NSImage {
+    static func render(items: [StatusUsageItem]) -> NSImage {
         let ringSize: CGFloat = 18
         let spacing: CGFloat = 4
         let width = (ringSize * CGFloat(items.count)) + (spacing * CGFloat(max(items.count - 1, 0)))
@@ -87,8 +87,8 @@ private enum StatusBarRenderer {
         return image
     }
 
-    private static func drawRing(item: StatusRingItem, in rect: NSRect) {
-        let progress = min(max(CGFloat(item.utilization) / 100.0, 0), 1)
+    private static func drawRing(item: StatusUsageItem, in rect: NSRect) {
+        let progress = min(max(CGFloat(item.utilization ?? 0) / 100.0, 0), 1)
         let center = CGPoint(x: rect.midX, y: rect.midY)
         let radius = rect.width / 2 - 1.8
         let lineWidth: CGFloat = 3.2
@@ -109,23 +109,28 @@ private enum StatusBarRenderer {
         ringColor(for: item).setStroke()
         progressPath.stroke()
 
-        let text = "\(item.utilization)" as NSString
+        let text = item.utilization.map(String.init) ?? "--"
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 7.5, weight: .bold),
             .foregroundColor: NSColor.white,
-            .paragraphStyle: paragraph
+            .paragraphStyle: paragraph,
         ]
         let textRect = NSRect(x: rect.minX, y: rect.midY - 4.8, width: rect.width, height: 10)
-        text.draw(in: textRect, withAttributes: attributes)
+        (text as NSString).draw(in: textRect, withAttributes: attributes)
     }
 
-    private static func ringColor(for item: StatusRingItem) -> NSColor {
+    private static func ringColor(for item: StatusUsageItem) -> NSColor {
         if item.hasError {
             return NSColor(calibratedRed: 0.95, green: 0.30, blue: 0.30, alpha: 1)
         }
-        return NSColor(calibratedRed: 0.18, green: 0.84, blue: 0.33, alpha: 1)
+        switch item.window {
+        case .fiveHour:
+            return NSColor(calibratedRed: 0.15, green: 0.53, blue: 0.95, alpha: 1)
+        case .sevenDay:
+            return NSColor(calibratedRed: 0.18, green: 0.84, blue: 0.33, alpha: 1)
+        }
     }
 }
 
