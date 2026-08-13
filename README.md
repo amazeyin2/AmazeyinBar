@@ -1,6 +1,6 @@
 # AmazeyinBar
 
-一个常驻 macOS 菜单栏的 GPT 用量与 Jenkins Webhook 通知工具。它将多个 ChatGPT 账号的 5 小时、7 天用量集中展示，并在构建完成时通过 App 原生通知提醒你。
+一个常驻 macOS 菜单栏的 GPT 用量与通用 Webhook 通知工具。它将多个 ChatGPT 账号的 5 小时、7 天用量集中展示，并将任意服务发送的 Webhook 消息通过 App 原生通知提醒你。
 
 ![AmazeyinBar 菜单效果图](docs/amazeyinbar-menu-preview.png)
 
@@ -11,7 +11,7 @@
 - 支持定时刷新和“立即刷新”。
 - 支持从剪贴板粘贴 ChatGPT 请求 cURL 导入账号。
 - 支持从当前 Chrome 页面导入账号或账号后台数据。
-- 内置本地 Webhook 接收端，可接收 Jenkins 等服务的构建通知。
+- 内置本地 Webhook 接收端，可接收任意服务的事件通知；Jenkins 构建通知只是其中一种调用示例。
 - 使用 macOS 原生通知通道与系统默认提示音；通知展示策略由用户在系统设置中控制。
 - 支持一键打开配置、显示配置目录、复制 Webhook cURL 示例与发送本机测试通知。
 
@@ -91,8 +91,10 @@ http://<Mac 局域网 IP>:8787/notify
 ```bash
 curl -X POST "http://<Mac 局域网 IP>:8787/notify?token=REPLACE_WITH_WEBHOOK_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"title":"Jenkins","subtitle":"构建完成","message":"productV2 #294 构建成功","sound":true}'
+  -d '{"title":"部署服务","subtitle":"任务完成","message":"生产环境已成功发布","sound":true}'
 ```
+
+Jenkins 可按同一接口推送构建结果，也可以接入 CI/CD、监控告警、定时任务或任何能够发送 HTTP 请求的服务。
 
 请求体字段：
 
