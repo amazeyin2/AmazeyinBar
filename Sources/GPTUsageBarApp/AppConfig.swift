@@ -35,7 +35,8 @@ struct AppConfig: Codable {
             bindAddress: "0.0.0.0",
             port: 8787,
             path: "/notify",
-            token: "REPLACE_WITH_WEBHOOK_TOKEN"
+            token: "REPLACE_WITH_WEBHOOK_TOKEN",
+            allowLockRequests: false
         )
     )
 }
@@ -52,6 +53,8 @@ struct WebhookConfig: Codable {
     var port: Int
     var path: String
     var token: String?
+    /// Disabled by default so an existing configuration cannot unexpectedly lock this Mac.
+    var allowLockRequests: Bool?
 
     var normalizedPath: String {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -61,6 +64,10 @@ struct WebhookConfig: Codable {
 
     var trimmedToken: String? {
         token?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+
+    var allowsLockRequests: Bool {
+        allowLockRequests ?? false
     }
 }
 
@@ -73,7 +80,7 @@ enum TitleMode: String, Codable, CaseIterable {
         switch self {
         case .fiveHour: "5H"
         case .sevenDay: "7D"
-        case .compact: "CMP"
+        case .compact: "ALL"
         }
     }
 }
@@ -174,6 +181,10 @@ struct AccountConfig: Codable, Identifiable {
 
     var trimmedChatGPTAccountID: String? {
         chatGPTAccountID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+    }
+
+    var trimmedAuthorization: String? {
+        authorization?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
     }
 }
 

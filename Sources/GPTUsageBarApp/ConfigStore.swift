@@ -41,6 +41,21 @@ final class ConfigStore: ObservableObject {
         self.config = config
     }
 
+    func setLockRequestsAllowed(_ allowed: Bool) throws {
+        guard var webhook = config.webhook else { return }
+        webhook.allowLockRequests = allowed
+
+        var updatedConfig = config
+        updatedConfig.webhook = webhook
+        try save(updatedConfig)
+    }
+
+    func setTitleMode(_ titleMode: TitleMode) throws {
+        var updatedConfig = config
+        updatedConfig.titleMode = titleMode
+        try save(updatedConfig)
+    }
+
     private static func loadConfig(from url: URL) throws -> AppConfig {
         let data = try Data(contentsOf: url)
         return try JSONDecoder().decode(AppConfig.self, from: data)

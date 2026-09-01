@@ -13,12 +13,20 @@ struct UsageWindow {
     let windowStats: WindowStats
 }
 
-struct WindowStats {
+struct WindowStats: Decodable {
     let requests: Int
     let tokens: Int
     let cost: Double
     let standardCost: Double
     let userCost: Double
+
+    enum CodingKeys: String, CodingKey {
+        case requests
+        case tokens
+        case cost
+        case standardCost = "standard_cost"
+        case userCost = "user_cost"
+    }
 }
 
 struct AccountUsageState: Identifiable {

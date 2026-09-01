@@ -93,7 +93,7 @@ struct ChromeImportService {
                     baseURL: baseURL,
                     timezone: "Asia/Shanghai",
                     source: "active",
-                    authorization: nil,
+                    authorization: captured.authorization,
                     cookie: nil,
                     accessToken: secrets.accessToken,
                     chatGPTAccountID: secrets.chatGPTAccountID,

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 private let menuBackgroundColor = Color(red: 0.93, green: 0.925, blue: 0.90)
@@ -6,6 +7,7 @@ struct MenuBarView: View {
     @EnvironmentObject private var configStore: ConfigStore
     @EnvironmentObject private var usageStore: UsageStore
     @EnvironmentObject private var webhookStore: WebhookStore
+    @State private var configurationError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -97,11 +99,22 @@ struct MenuBarView: View {
                     maxContentHeight: 120
                 )
             }
+
+            if let configurationError {
+                StatusRow(
+                    icon: "exclamationmark.triangle.fill",
+                    title: "配置",
+                    value: configurationError,
+                    statusColor: .red
+                )
+            }
         }
     }
 
     private var actionButtons: some View {
         VStack(alignment: .leading, spacing: 2) {
+            statusBarModePicker
+
             HoverActionButton("立即刷新", icon: "arrow.clockwise") {
                 Task { await usageStore.refresh(forceReloadConfig: true) }
             }
@@ -117,6 +130,13 @@ struct MenuBarView: View {
 
             HoverActionButton("从当前 Chrome 页面导入账号", icon: "globe") {
                 Task { await usageStore.importFromChrome() }
+            }
+            .disabled(usageStore.isImporting)
+
+            HoverActionButton("通过 Sub2API API Key 导入账号", icon: "key.fill") {
+                Sub2APIImportWindowController.shared.show { baseURL, apiKey in
+                    Task { await usageStore.importFromSub2API(baseURL: baseURL, apiKey: apiKey) }
+                }
             }
             .disabled(usageStore.isImporting)
 
@@ -136,6 +156,8 @@ struct MenuBarView: View {
                 Task { await webhookStore.sendTestNotification() }
             }
 
+            lockRequestsToggle
+
             Divider()
 
             header
@@ -146,6 +168,160 @@ struct MenuBarView: View {
                 NSApplication.shared.terminate(nil)
             }
         }
+    }
+
+    private var statusBarModePicker: some View {
+        HStack(spacing: 8) {
+            Label("状态栏显示模式", systemImage: "menubar.rectangle")
+                .font(.body.weight(.medium))
+                .foregroundStyle(.black)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+
+            Picker("状态栏显示模式", selection: Binding(
+                get: { configStore.config.titleMode },
+                set: { updateTitleMode($0) }
+            )) {
+                Text("5H").tag(TitleMode.fiveHour)
+                Text("7D").tag(TitleMode.sevenDay)
+                Text("ALL").tag(TitleMode.compact)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 120)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+    }
+
+    private var lockRequestsToggle: some View {
+        Toggle(isOn: Binding(
+            get: { configStore.config.webhook?.allowsLockRequests ?? false },
+            set: { updateLockRequests(allowed: $0) }
+        )) {
+            HStack(spacing: 8) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 16)
+                    .foregroundStyle(Color(red: 0.32, green: 0.33, blue: 0.30))
+                Text("允许远程锁屏请求")
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.black)
+                Spacer(minLength: 0)
+                Text(configStore.config.webhook?.allowsLockRequests == true ? "已启用" : "已关闭")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .toggleStyle(.switch)
+        .disabled(configStore.config.webhook == nil)
+    }
+
+    private func updateLockRequests(allowed: Bool) {
+        do {
+            try configStore.setLockRequestsAllowed(allowed)
+            configurationError = nil
+        } catch {
+            configurationError = "保存锁屏开关失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func updateTitleMode(_ titleMode: TitleMode) {
+        do {
+            try configStore.setTitleMode(titleMode)
+            configurationError = nil
+            Task { await usageStore.reloadConfiguration() }
+        } catch {
+            configurationError = "保存状态栏显示模式失败：\(error.localizedDescription)"
+        }
+    }
+}
+
+private struct Sub2APIImportView: View {
+    @State private var baseURL = "https://sub.amazeyin.com"
+    @State private var apiKey = ""
+
+    let onImport: (String, String) -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("导入 Sub2API 账号")
+                .font(.title3.weight(.semibold))
+
+            Text("粘贴后台生成的 Admin API Key。密钥仅保存到 macOS 钥匙串，不会写入配置文件。")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("后台地址")
+                    .font(.caption.weight(.medium))
+                TextField("https://your-sub2api.example", text: $baseURL)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Admin API Key")
+                    .font(.caption.weight(.medium))
+                SecureField("admin-...", text: $apiKey)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            HStack {
+                Button("取消") { onCancel() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("导入账号") {
+                    onImport(baseURL, apiKey)
+                    onCancel()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+}
+
+@MainActor
+private final class Sub2APIImportWindowController {
+    static let shared = Sub2APIImportWindowController()
+
+    private var window: NSPanel?
+
+    func show(onImport: @escaping (String, String) -> Void) {
+        close()
+
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 360),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = "导入 Sub2API 账号"
+        panel.isReleasedWhenClosed = false
+        panel.center()
+
+        let importView = Sub2APIImportView(
+            onImport: onImport,
+            onCancel: { [weak self] in self?.close() }
+        )
+        panel.contentViewController = NSHostingController(rootView: importView)
+        window = panel
+
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    private func close() {
+        window?.close()
+        window = nil
     }
 }
 
@@ -265,14 +441,15 @@ private struct StatusRow: View {
 
     @ViewBuilder
     private var content: some View {
-        if let maxContentHeight {
+        if maxContentHeight != nil {
             let summary = value.trimmingCharacters(in: .whitespacesAndNewlines)
             Text(summary.isEmpty ? "收到一条通知" : summary)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.black)
                 .textSelection(.enabled)
                 .lineLimit(3)
-                .frame(maxWidth: .infinity, maxHeight: maxContentHeight, alignment: .topLeading)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(6)
                 .background(Color(red: 0.88, green: 0.875, blue: 0.84), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         } else {

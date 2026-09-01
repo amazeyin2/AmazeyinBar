@@ -7,6 +7,8 @@ import SwiftUI
 
 @MainActor
 final class WebhookStore: NSObject, ObservableObject {
+    private static let lockPath = "/lock"
+    private static let unlockPath = "/unlock"
     @Published private(set) var endpointSummary = "未启用"
     @Published private(set) var lastNotificationSummary: String?
     @Published private(set) var authorizationSummary = "未检查"
@@ -182,12 +184,15 @@ final class WebhookStore: NSObject, ObservableObject {
     }
 
     private func process(request: HTTPRequest, on connection: NWConnection, config: WebhookConfig) async {
-        guard request.path == config.normalizedPath else {
+        let isNotificationRequest = request.path == config.normalizedPath
+        let isLockRequest = request.path == Self.lockPath
+        let isUnlockRequest = request.path == Self.unlockPath
+        guard isNotificationRequest || isLockRequest || isUnlockRequest else {
             respond(on: connection, status: 404, body: ["ok": false, "error": "Not found"])
             return
         }
 
-        guard request.method == "POST" || request.method == "GET" else {
+        guard request.method == "POST" || (request.method == "GET" && isNotificationRequest) else {
             respond(on: connection, status: 405, body: ["ok": false, "error": "Method not allowed"])
             return
         }
@@ -200,6 +205,31 @@ final class WebhookStore: NSObject, ObservableObject {
 
         if request.method == "GET" {
             respond(on: connection, status: 200, body: ["ok": true, "message": "Webhook receiver is running"])
+            return
+        }
+
+        if isLockRequest {
+            guard config.allowsLockRequests else {
+                log("Rejected lock request because allowLockRequests is disabled")
+                respond(on: connection, status: 403, body: ["ok": false, "error": "Lock requests are disabled"])
+                return
+            }
+            await lockScreen()
+            respond(on: connection, status: 200, body: ["ok": true, "action": "lock", "message": "Display sleep requested"])
+            return
+        }
+
+        if isUnlockRequest {
+            await wakeDisplay()
+            respond(
+                on: connection,
+                status: 200,
+                body: [
+                    "ok": true,
+                    "action": "unlock",
+                    "message": "Display wake requested; macOS authentication is still required for a locked session"
+                ]
+            )
             return
         }
 
@@ -254,6 +284,29 @@ final class WebhookStore: NSObject, ObservableObject {
             .filter { !$0.isEmpty }
             .joined(separator: " - ")
         lastNotificationSummary = summary.isEmpty ? "收到一条通知" : summary
+    }
+
+    private func lockScreen() async {
+        // macOS decides whether waking from display sleep requires authentication.
+        launchSystemCommand("/usr/bin/pmset", arguments: ["displaysleepnow"])
+        log("Lock endpoint requested display sleep")
+    }
+
+    private func wakeDisplay() async {
+        // This wakes a sleeping display but deliberately cannot bypass the lock screen.
+        launchSystemCommand("/usr/bin/caffeinate", arguments: ["-u", "-t", "1"])
+        log("Unlock endpoint requested display wake")
+    }
+
+    private func launchSystemCommand(_ executablePath: String, arguments: [String]) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+        do {
+            try process.run()
+        } catch {
+            log("System command failed: \(executablePath) \(error.localizedDescription)")
+        }
     }
 
     private func presentAuthorizationGuidance() async {
@@ -340,6 +393,10 @@ final class WebhookStore: NSObject, ObservableObject {
         curl -X POST "http://你的Mac局域网IP:\(config.port)\(config.normalizedPath)\(tokenQuery)" \
           -H "Content-Type: application/json" \
           -d '{"title":"Jenkins","subtitle":"构建完成","message":"job 执行成功"}'
+
+        # 锁屏 / 唤醒显示器（与通知端点共用 token）
+        curl -X POST "http://你的Mac局域网IP:\(config.port)/lock\(tokenQuery)"
+        curl -X POST "http://你的Mac局域网IP:\(config.port)/unlock\(tokenQuery)"
         """
     }
 }
@@ -483,6 +540,7 @@ private enum HTTPResponse {
         case 200: "OK"
         case 400: "Bad Request"
         case 401: "Unauthorized"
+        case 403: "Forbidden"
         case 404: "Not Found"
         case 405: "Method Not Allowed"
         default: "Internal Server Error"

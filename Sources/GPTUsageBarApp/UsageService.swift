@@ -11,6 +11,14 @@ struct UsageService {
     }
 
     func fetchUsage(for account: AccountConfig) async throws -> UsagePayload {
+        if account.source == "active" || account.source == "sub2api-admin" {
+            return try await fetchAdminUsage(for: account)
+        }
+
+        return try await fetchOpenAIUsage(for: account)
+    }
+
+    private func fetchOpenAIUsage(for account: AccountConfig) async throws -> UsagePayload {
         guard let accessToken = account.trimmedAccessToken else {
             throw UsageServiceError.missingCredential(account.name, "accessToken")
         }
@@ -45,6 +53,52 @@ struct UsageService {
 
         let quota = try decoder.decode(OpenAIQuotaUsage.self, from: data)
         return try buildPayload(from: quota)
+    }
+
+    private func fetchAdminUsage(for account: AccountConfig) async throws -> UsagePayload {
+        let credential: (header: String, value: String)
+        do {
+            credential = ("x-api-key", try Sub2APIAdminService.apiKey(for: account.baseURL))
+        } catch Sub2APIAdminError.missingAPIKey {
+            guard let authorization = account.trimmedAuthorization else {
+                throw UsageServiceError.missingCredential(account.name, "Sub2API Admin API Key")
+            }
+            // Existing Chrome imports keep working until the Admin API Key is added.
+            credential = ("authorization", authorization)
+        }
+        guard var components = URLComponents(string: account.baseURL) else {
+            throw UsageServiceError.apiError("账号 \(account.name) 的后台地址无效")
+        }
+
+        components.path = "/api/v1/admin/accounts/\(account.id)/usage"
+        components.queryItems = [
+            URLQueryItem(name: "source", value: account.source == "sub2api-admin" ? "active" : account.source),
+            URLQueryItem(name: "force", value: "true"),
+            URLQueryItem(name: "timezone", value: account.timezone),
+        ]
+        guard let url = components.url else {
+            throw UsageServiceError.apiError("无法生成账号 \(account.name) 的用量地址")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "accept")
+        request.setValue(credential.value, forHTTPHeaderField: credential.header)
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw UsageServiceError.invalidResponse
+        }
+        guard (200 ..< 300).contains(httpResponse.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw UsageServiceError.httpError(statusCode: httpResponse.statusCode, body: body)
+        }
+
+        let envelope = try decoder.decode(AdminUsageEnvelope.self, from: data)
+        guard envelope.code == 0, let usage = envelope.data else {
+            throw UsageServiceError.apiError(envelope.message ?? "后台未返回用量数据")
+        }
+        return try usage.payload()
     }
 
     private func buildPayload(from quota: OpenAIQuotaUsage) throws -> UsagePayload {
@@ -130,6 +184,66 @@ struct UsageService {
             resetsAt: resetAt,
             remainingSeconds: remainingSeconds,
             windowStats: .zero
+        )
+    }
+}
+
+private struct AdminUsageEnvelope: Decodable {
+    let code: Int
+    let message: String?
+    let data: AdminUsageData?
+}
+
+private struct AdminUsageData: Decodable {
+    let updatedAt: String
+    let fiveHour: AdminUsageWindow
+    let sevenDay: AdminUsageWindow
+
+    enum CodingKeys: String, CodingKey {
+        case updatedAt = "updated_at"
+        case fiveHour = "five_hour"
+        case sevenDay = "seven_day"
+    }
+
+    func payload() throws -> UsagePayload {
+        UsagePayload(
+            updatedAt: try Self.parseDate(updatedAt),
+            fiveHour: try fiveHour.usageWindow(),
+            sevenDay: try sevenDay.usageWindow()
+        )
+    }
+
+    static func parseDate(_ value: String) throws -> Date {
+        for options: ISO8601DateFormatter.Options in [.withInternetDateTime, [.withInternetDateTime, .withFractionalSeconds]] {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = options
+            if let date = formatter.date(from: value) {
+                return date
+            }
+        }
+        throw UsageServiceError.apiError("后台返回了无法识别的时间：\(value)")
+    }
+}
+
+private struct AdminUsageWindow: Decodable {
+    let utilization: Int
+    let resetsAt: String
+    let remainingSeconds: Int
+    let windowStats: WindowStats
+
+    enum CodingKeys: String, CodingKey {
+        case utilization
+        case resetsAt = "resets_at"
+        case remainingSeconds = "remaining_seconds"
+        case windowStats = "window_stats"
+    }
+
+    func usageWindow() throws -> UsageWindow {
+        UsageWindow(
+            utilization: utilization,
+            resetsAt: try AdminUsageData.parseDate(resetsAt),
+            remainingSeconds: remainingSeconds,
+            windowStats: windowStats
         )
     }
 }

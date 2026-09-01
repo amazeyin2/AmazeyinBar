@@ -15,18 +15,21 @@ final class UsageStore: ObservableObject {
     private let service: UsageService
     private let chromeImportService: ChromeImportService
     private let curlImportService: CurlImportService
+    private let sub2APIAdminService: Sub2APIAdminService
     private var refreshTask: Task<Void, Never>?
 
     init(
         configStore: ConfigStore,
         service: UsageService = UsageService(),
         chromeImportService: ChromeImportService = ChromeImportService(),
-        curlImportService: CurlImportService = CurlImportService()
+        curlImportService: CurlImportService = CurlImportService(),
+        sub2APIAdminService: Sub2APIAdminService = Sub2APIAdminService()
     ) {
         self.configStore = configStore
         self.service = service
         self.chromeImportService = chromeImportService
         self.curlImportService = curlImportService
+        self.sub2APIAdminService = sub2APIAdminService
         syncAccountsFromConfig()
         startAutoRefresh()
     }
@@ -104,6 +107,38 @@ final class UsageStore: ObservableObject {
                 throw CurlImportError.clipboardEmpty
             }
             return try curlImportService.importAccounts(from: text).importedAccounts
+        }
+    }
+
+    func importFromSub2API(baseURL: String, apiKey: String) async {
+        isImporting = true
+        lastError = nil
+        lastImportMessage = nil
+        defer { isImporting = false }
+
+        do {
+            let importedAccounts = try await sub2APIAdminService.importAccounts(
+                baseURL: baseURL,
+                apiKey: apiKey,
+                options: configStore.config.importOptions
+            )
+            try sub2APIAdminService.saveAPIKey(apiKey, for: baseURL)
+
+            var nextConfig = configStore.config
+            let importedBaseURL = importedAccounts[0].baseURL
+            let retainedAccounts = nextConfig.accounts.filter { account in
+                guard account.baseURL == importedBaseURL else { return true }
+                // Migrate entries created by the first API Key implementation as well.
+                return account.source != "sub2api-admin" && !(account.source == "active" && account.trimmedAuthorization == nil)
+            }
+            nextConfig.accounts = mergeAccounts(existing: retainedAccounts, imported: importedAccounts)
+            try configStore.save(nextConfig)
+            syncAccountsFromConfig()
+            startAutoRefresh()
+            lastImportMessage = "已通过 Sub2API API Key 导入 \(importedAccounts.count) 个账号"
+            await refresh(forceReloadConfig: false)
+        } catch {
+            lastError = error.localizedDescription
         }
     }
 
