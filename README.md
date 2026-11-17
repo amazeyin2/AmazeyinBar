@@ -1,19 +1,32 @@
 # AmazeyinBar
 
-一个常驻 macOS 菜单栏的 GPT 用量与通用 Webhook 通知工具。它将多个 ChatGPT 账号的 5 小时、7 天用量集中展示，并将任意服务发送的 Webhook 消息通过 App 原生通知提醒你。
+**用量、日历、通知，一眼尽览。** AmazeyinBar 常驻 macOS 菜单栏，集中展示多个 ChatGPT 账号的 5H / 7D 用量、当天日期与月历，也能把任意服务的 Webhook 消息送到系统通知。
 
-![AmazeyinBar 菜单效果图](docs/amazeyinbar-menu-preview.png)
+![AmazeyinBar v1.0.7 日历与用量面板](docs/amazeyinbar-calendar-preview.png)
+
+*当前版本实拍；账号名称已匿名化。*
+
+## v1.0.7 更新
+
+- 新增月历：农历、节日节气、法定节假日与调休、系统日程一处查看；点标题右侧齿轮进入设置。
+- 状态栏同时显示用量圆环和日期，可选择 5H、7D 或全部，并设置显示账号数。
+- 用量卡片紧凑呈现重置时间与倒计时；弹窗默认展示两个账号，更多账号可滚动查看。
+- 新增开机自启与局域网音频接收开关；锁屏期间暂停用量刷新，解锁后继续。
+- 更新界面配色与布局，保留通用 Webhook 通知及原有账号导入方式。
 
 ## 功能
 
-- 状态栏以圆环显示账号 5H、7D 用量；可配置显示模式与最多两组账号。
-- 下拉菜单以蓝色 5H 卡片、绿色 7D 卡片展示用量、重置时间与倒计时。
+- 状态栏以圆环显示账号 5H、7D 用量及公历日期、星期；可配置显示模式与账号数量（1–10 个）。
+- 月历显示农历、节日、节气、中国法定节假日与补班标记，并可查看 macOS 系统日程。
+- 下拉菜单以蓝色 5H 卡片、绿色 7D 卡片展示用量、重置时间与倒计时，并可切换到设置页。
 - 支持定时刷新和“立即刷新”。
+- 锁屏期间暂停额度刷新，解锁后立即更新。
 - 支持从剪贴板粘贴 ChatGPT 请求 cURL 导入账号。
 - 支持从当前 Chrome 页面导入账号或账号后台数据。
 - 支持通过 Sub2API Admin API Key 导入后台账号，无需保持 Chrome 登录。
 - 内置本地 Webhook 接收端，可接收任意服务的事件通知；Jenkins 构建通知只是其中一种调用示例。
 - 使用 macOS 原生通知通道与系统默认提示音；通知展示策略由用户在系统设置中控制。
+- 内置局域网音频接收端，可播放 Windows 发送端采集的系统声音。
 - 支持一键打开配置、显示配置目录、复制 Webhook cURL 示例与发送本机测试通知。
 
 ## 安装
@@ -28,12 +41,26 @@
 
 ## 配置
 
+### 日历
+
+菜单栏日期按本机时区显示。点击日历标题右侧的齿轮可进入设置，设置页左上角可返回日历；月历支持切换月份、返回今天、查看所选日期的农历、节气、节日、休班安排及系统日程。设置页可以分别关闭系统日程、农历、节日和节气、节假日倒计时及调休标记，也可通过“开机自启”开关管理 macOS 登录项。若系统要求批准，请到“系统设置 > 通用 > 登录项与扩展”中允许 AmazeyinBar。
+
+系统日程需要 macOS 日历访问权限，拒绝权限后仍可查看其他日期信息。中国法定节假日及调休来自 [holiday-cn](https://github.com/NateScarlet/holiday-cn)，按年下载并缓存到 `~/Library/Application Support/GPTUsageBar/holidays/`，每天检查更新。离线时使用缓存；未公布的年份不会推测放假安排。数据源采用 MIT 许可，Copyright © 2019 NateScarlet，详见[原项目许可证](https://github.com/NateScarlet/holiday-cn/blob/master/LICENSE)。节气使用本地近似算法计算。
+
+### Windows 音频传到 Mac
+
+在菜单中的“允许远程锁屏请求”下方打开“允许传音”。AmazeyinBar 会监听 UDP `49831`，等待 Windows 端发送音频；开关状态保存到配置文件，并在下次启动时恢复。关闭开关即停止接收并释放端口。独立版 `LanAudioReceiver` 使用相同端口，使用内置接收端前请先退出独立版。
+
+在 Windows 上运行现有的 `LanAudioSender.exe`，传入 Mac 的局域网 IPv4 地址，例如 `LanAudioSender.exe 你的Mac局域网IP`。播放使用 Mac 当前默认音频输出设备。若菜单显示“端口 49831 被占用”，退出其他接收程序后关闭再打开开关即可重试。
+
 以下是一个脱敏示例。请勿将真实 token、Cookie、Admin API Key 或 Webhook 密钥提交到仓库。
 
 ```json
 {
   "refreshIntervalSeconds": 300,
   "titleMode": "compact",
+  "statusBarAccountLimit": 2,
+  "allowAudioReceiving": false,
   "accounts": [
     {
       "id": 1,
@@ -64,7 +91,9 @@
 
 - `fiveHour`：显示每个账号的蓝色 5H 用量圆环。
 - `sevenDay`：显示每个账号的绿色 7D 用量圆环。
-- `compact`：同时显示 5H 与 7D 圆环，最多显示两个账号共四个圆环。
+- `compact`：每个账号同时显示 5H 与 7D 圆环。
+
+`statusBarAccountLimit` 控制状态栏最多显示的账号数，可在菜单中选 1–10 个；旧配置默认显示 2 个，超出的账号以 `+N` 提示。
 
 ## 导入账号
 
@@ -151,6 +180,6 @@ open dist/AmazeyinBar.app
 推送 `v*` 标签会自动触发 GitHub Actions，在 macOS 构建并创建包含 `AmazeyinBar-macos.zip` 的 Release。
 
 ```bash
-git tag -a v1.0.5 -m "AmazeyinBar v1.0.5"
-git push origin v1.0.5
+git tag -a v1.0.7 -m "AmazeyinBar v1.0.7"
+git push origin v1.0.7
 ```

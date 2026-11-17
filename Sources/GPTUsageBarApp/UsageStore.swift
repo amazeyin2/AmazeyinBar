@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import Foundation
 import SwiftUI
 
@@ -17,6 +18,7 @@ final class UsageStore: ObservableObject {
     private let curlImportService: CurlImportService
     private let sub2APIAdminService: Sub2APIAdminService
     private var refreshTask: Task<Void, Never>?
+    private var isScreenLocked = false
 
     init(
         configStore: ConfigStore,
@@ -30,12 +32,15 @@ final class UsageStore: ObservableObject {
         self.chromeImportService = chromeImportService
         self.curlImportService = curlImportService
         self.sub2APIAdminService = sub2APIAdminService
+        isScreenLocked = Self.currentScreenLockState()
         syncAccountsFromConfig()
+        observeScreenLock()
         startAutoRefresh()
     }
 
     deinit {
         refreshTask?.cancel()
+        DistributedNotificationCenter.default().removeObserver(self)
     }
 
     func syncAccountsFromConfig() {
@@ -56,6 +61,7 @@ final class UsageStore: ObservableObject {
     }
 
     func refresh(forceReloadConfig: Bool = false) async {
+        guard !isScreenLocked else { return }
         if forceReloadConfig {
             do {
                 try configStore.reload()
@@ -74,10 +80,13 @@ final class UsageStore: ObservableObject {
         var nextStates: [AccountUsageState] = []
 
         for account in accounts {
+            guard !isScreenLocked, !Task.isCancelled else { return }
             do {
                 let payload = try await service.fetchUsage(for: account)
+                guard !isScreenLocked, !Task.isCancelled else { return }
                 nextStates.append(AccountUsageState(account: account, payload: payload, lastRefresh: .now))
             } catch {
+                guard !isScreenLocked, !Task.isCancelled else { return }
                 let previous = existingState(for: account) ?? AccountUsageState(account: account)
                 var failedState = previous
                 failedState.errorMessage = error.localizedDescription
@@ -202,6 +211,7 @@ final class UsageStore: ObservableObject {
 
     private func startAutoRefresh() {
         refreshTask?.cancel()
+        guard !isScreenLocked else { return }
         let refreshInterval = max(configStore.config.refreshIntervalSeconds, 60)
         refreshTask = Task { [weak self] in
             guard let self else { return }
@@ -212,6 +222,36 @@ final class UsageStore: ObservableObject {
                 await self.refresh(forceReloadConfig: false)
             }
         }
+    }
+
+    private func observeScreenLock() {
+        let center = DistributedNotificationCenter.default()
+        center.addObserver(self, selector: #selector(screenDidLock), name: Notification.Name("com.apple.screenIsLocked"), object: nil)
+        center.addObserver(self, selector: #selector(screenDidUnlock), name: Notification.Name("com.apple.screenIsUnlocked"), object: nil)
+    }
+
+    @objc private func screenDidLock(_ notification: Notification) {
+        setScreenLocked(true)
+    }
+
+    @objc private func screenDidUnlock(_ notification: Notification) {
+        setScreenLocked(false)
+    }
+
+    private func setScreenLocked(_ locked: Bool) {
+        guard isScreenLocked != locked else { return }
+        isScreenLocked = locked
+        if locked {
+            refreshTask?.cancel()
+            refreshTask = nil
+        } else {
+            startAutoRefresh()
+        }
+    }
+
+    private static func currentScreenLockState() -> Bool {
+        let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+        return session?["CGSSessionScreenIsLocked"] as? Bool ?? false
     }
 
     private func existingState(for account: AccountConfig) -> AccountUsageState? {

@@ -6,6 +6,13 @@ struct AppConfig: Codable {
     var accounts: [AccountConfig]
     var importOptions: ImportOptions?
     var webhook: WebhookConfig?
+    var allowAudioReceiving: Bool?
+    var statusBarAccountLimit: Int?
+    var calendarDisplay: CalendarDisplayOptions?
+
+    var effectiveStatusBarAccountLimit: Int {
+        min(max(statusBarAccountLimit ?? 2, 1), 10)
+    }
 
     static let sample = AppConfig(
         refreshIntervalSeconds: 300,
@@ -37,8 +44,32 @@ struct AppConfig: Codable {
             path: "/notify",
             token: "REPLACE_WITH_WEBHOOK_TOKEN",
             allowLockRequests: false
-        )
+        ),
+        allowAudioReceiving: false,
+        statusBarAccountLimit: 2,
+        calendarDisplay: CalendarDisplayOptions()
     )
+}
+
+struct CalendarDisplayOptions: Codable {
+    var systemEvents = true
+    var lunar = true
+    var festivalsAndTerms = true
+    var holidayCountdownAndWorkdays = true
+
+    enum CodingKeys: String, CodingKey {
+        case systemEvents, lunar, festivalsAndTerms, holidayCountdownAndWorkdays
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        systemEvents = try values.decodeIfPresent(Bool.self, forKey: .systemEvents) ?? true
+        lunar = try values.decodeIfPresent(Bool.self, forKey: .lunar) ?? true
+        festivalsAndTerms = try values.decodeIfPresent(Bool.self, forKey: .festivalsAndTerms) ?? true
+        holidayCountdownAndWorkdays = try values.decodeIfPresent(Bool.self, forKey: .holidayCountdownAndWorkdays) ?? true
+    }
 }
 
 struct ImportOptions: Codable {

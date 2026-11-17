@@ -52,6 +52,10 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>用于在日历中显示你选择日期的系统日程。</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>用于在日历中显示你选择日期的系统日程。</string>
 </dict>
 </plist>
 PLIST

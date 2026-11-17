@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 
 private let menuBackgroundColor = Color(red: 0.93, green: 0.925, blue: 0.90)
@@ -7,11 +8,82 @@ struct MenuBarView: View {
     @EnvironmentObject private var configStore: ConfigStore
     @EnvironmentObject private var usageStore: UsageStore
     @EnvironmentObject private var webhookStore: WebhookStore
+    @EnvironmentObject private var audioReceiver: LANAudioReceiver
+    @EnvironmentObject private var calendarStore: CalendarStore
     @State private var configurationError: String?
+    @State private var launchAtLoginStatus = SMAppService.mainApp.status
+    @State private var launchAtLoginError: String?
+    @State private var selectedPane: MenuPane = .calendar
+
+    private enum MenuPane: String {
+        case calendar = "日历"
+        case settings = "设置"
+    }
+
+    private var accountPanelHeight: CGFloat {
+        if usageStore.accountStates.isEmpty { return 44 }
+        return min(CGFloat(usageStore.accountStates.count) * 85, 170)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 12) {
+            ScrollView { accountSections }
+            .frame(height: accountPanelHeight)
+            .padding(.horizontal, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(menuBackgroundColor)
+            )
+            .compositingGroup()
+
+            if selectedPane == .calendar {
+                CalendarPanelView(onShowSettings: { selectedPane = .settings })
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        Button { selectedPane = .calendar } label: {
+                            Image(systemName: "chevron.left")
+                                .frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(.plain)
+                        .help("返回日历")
+                        .accessibilityLabel("返回日历")
+                        Text("设置")
+                            .font(.system(size: 18, weight: .semibold))
+                    }
+                    .padding(.horizontal, 6)
+                    CalendarSettingsControls()
+                    Divider()
+                    actionButtons
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Divider()
+            header
+            Divider()
+            HoverActionButton("退出", icon: "power", isDestructive: true) {
+                NSApplication.shared.terminate(nil)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 4)
+        .padding(.bottom, 12)
+        .frame(width: 360)
+        .background(menuBackgroundColor)
+        .onAppear {
+            launchAtLoginStatus = SMAppService.mainApp.status
+            Task { await calendarStore.openCalendar(showEvents: configStore.config.calendarDisplay?.systemEvents ?? true) }
+        }
+        .onChange(of: selectedPane) { _, pane in
+            if pane == .calendar {
+                Task { await calendarStore.openCalendar(showEvents: configStore.config.calendarDisplay?.systemEvents ?? true) }
+            }
+        }
+    }
+
+    private var accountSections: some View {
+        VStack(alignment: .leading, spacing: 8) {
                 if usageStore.accountStates.isEmpty {
                     HStack(spacing: 8) {
                         Image(systemName: "exclamationmark.triangle.fill")
@@ -24,7 +96,7 @@ struct MenuBarView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(menuBackgroundColor, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 } else {
-                    VStack(spacing: 10) {
+                    VStack(spacing: 6) {
                         ForEach(Array(usageStore.accountStates.enumerated()), id: \.element.id) { index, state in
                             AccountSection(state: state)
                             if index < usageStore.accountStates.count - 1 {
@@ -34,23 +106,7 @@ struct MenuBarView: View {
                         }
                     }
                 }
-            }
-            .padding(.horizontal, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(menuBackgroundColor)
-            )
-            .compositingGroup()
-
-            Divider()
-
-            actionButtons
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 4)
-        .padding(.bottom, 12)
-        .frame(width: 320)
-        .background(menuBackgroundColor)
     }
 
     private var header: some View {
@@ -114,6 +170,7 @@ struct MenuBarView: View {
     private var actionButtons: some View {
         VStack(alignment: .leading, spacing: 2) {
             statusBarModePicker
+            statusBarAccountLimitPicker
 
             HoverActionButton("立即刷新", icon: "arrow.clockwise") {
                 Task { await usageStore.refresh(forceReloadConfig: true) }
@@ -157,17 +214,64 @@ struct MenuBarView: View {
             }
 
             lockRequestsToggle
+            audioReceivingToggle
+            launchAtLoginToggle
+        }
+    }
 
-            Divider()
+    private var launchAtLoginToggle: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Toggle(isOn: Binding(
+                get: { launchAtLoginStatus == .enabled || launchAtLoginStatus == .requiresApproval },
+                set: { updateLaunchAtLogin(enabled: $0) }
+            )) {
+                HStack(spacing: 8) {
+                    Image(systemName: "power")
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(width: 16)
+                        .foregroundStyle(Color(red: 0.32, green: 0.33, blue: 0.30))
+                    Text("开机自启")
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.black)
+                    Spacer(minLength: 0)
+                    if launchAtLoginStatus == .requiresApproval {
+                        Text("需系统批准")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+            }
+            .toggleStyle(.switch)
 
-            header
-
-            Divider()
-
-            HoverActionButton("退出", icon: "power", isDestructive: true) {
-                NSApplication.shared.terminate(nil)
+            if launchAtLoginStatus == .requiresApproval {
+                Text("请在系统设置 > 通用 > 登录项与扩展中允许 AmazeyinBar。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+            }
+            if let launchAtLoginError {
+                Text(launchAtLoginError)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 8)
             }
         }
+    }
+
+    private func updateLaunchAtLogin(enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            launchAtLoginError = nil
+        } catch {
+            launchAtLoginError = "更新开机自启失败：\(error.localizedDescription)"
+        }
+        launchAtLoginStatus = SMAppService.mainApp.status
     }
 
     private var statusBarModePicker: some View {
@@ -190,6 +294,31 @@ struct MenuBarView: View {
             .labelsHidden()
             .pickerStyle(.segmented)
             .frame(width: 120)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+    }
+
+    private var statusBarAccountLimitPicker: some View {
+        HStack(spacing: 8) {
+            Label("状态栏显示账号数", systemImage: "person.2")
+                .font(.body.weight(.medium))
+                .foregroundStyle(.black)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+
+            Picker("状态栏显示账号数", selection: Binding(
+                get: { configStore.config.effectiveStatusBarAccountLimit },
+                set: { updateStatusBarAccountLimit($0) }
+            )) {
+                ForEach(1...10, id: \.self) { count in
+                    Text("\(count) 个").tag(count)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 80)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 2)
@@ -230,6 +359,41 @@ struct MenuBarView: View {
         }
     }
 
+    private var audioReceivingToggle: some View {
+        Toggle(isOn: Binding(
+            get: { configStore.config.allowAudioReceiving == true },
+            set: { updateAudioReceiving(allowed: $0) }
+        )) {
+            HStack(spacing: 8) {
+                Image(systemName: "speaker.wave.2.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 16)
+                    .foregroundStyle(Color(red: 0.32, green: 0.33, blue: 0.30))
+                Text("允许传音")
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.black)
+                Spacer(minLength: 0)
+                Text(audioReceiver.status)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .toggleStyle(.switch)
+    }
+
+    private func updateAudioReceiving(allowed: Bool) {
+        do {
+            try configStore.setAudioReceivingAllowed(allowed)
+            configurationError = nil
+        } catch {
+            configurationError = "保存传音开关失败：\(error.localizedDescription)"
+        }
+    }
+
     private func updateTitleMode(_ titleMode: TitleMode) {
         do {
             try configStore.setTitleMode(titleMode)
@@ -237,6 +401,15 @@ struct MenuBarView: View {
             Task { await usageStore.reloadConfiguration() }
         } catch {
             configurationError = "保存状态栏显示模式失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func updateStatusBarAccountLimit(_ limit: Int) {
+        do {
+            try configStore.setStatusBarAccountLimit(limit)
+            configurationError = nil
+        } catch {
+            configurationError = "保存状态栏显示账号数失败：\(error.localizedDescription)"
         }
     }
 }
@@ -466,7 +639,7 @@ private struct AccountSection: View {
     let state: AccountUsageState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 5) {
             if let payload = state.payload {
                 compactAccount(payload: payload)
             } else if let errorMessage = state.errorMessage {
@@ -484,7 +657,7 @@ private struct AccountSection: View {
     }
 
     private func compactAccount(payload: UsagePayload) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 Image(systemName: "person.crop.circle")
                     .font(.system(size: 13))
@@ -503,7 +676,7 @@ private struct AccountSection: View {
     }
 
     private func metricCard(title: String, window: UsageWindow, palette: MetricPalette) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 Image(systemName: title == "5H" ? "clock" : "calendar")
                     .font(.system(size: 13, weight: .semibold))
@@ -515,19 +688,16 @@ private struct AccountSection: View {
             }
             .foregroundStyle(.white)
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text("重置 \(AppFormatters.dateTime.string(from: window.resetsAt))")
-                Text(AppFormatters.countdownString(seconds: window.remainingSeconds))
-            }
-            .font(.caption2)
-            .foregroundStyle(.white)
-            .fixedSize(horizontal: false, vertical: true)
+            Text("重置 \(AppFormatters.dateTime.string(from: window.resetsAt)) · \(AppFormatters.countdownString(seconds: window.remainingSeconds))")
+                .font(.caption2)
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 7)
         .background(palette.gradient, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .shadow(color: palette.shadowColor, radius: 4, x: 0, y: 2)
     }
 }
 
@@ -552,12 +722,4 @@ private enum MetricPalette {
         }
     }
 
-    var shadowColor: Color {
-        switch self {
-        case .fiveHour:
-            return Color(red: 0.34, green: 0.42, blue: 0.56)
-        case .sevenDay:
-            return Color(red: 0.35, green: 0.58, blue: 0.49)
-        }
-    }
 }

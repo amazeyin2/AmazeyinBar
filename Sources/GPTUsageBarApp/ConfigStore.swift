@@ -50,9 +50,27 @@ final class ConfigStore: ObservableObject {
         try save(updatedConfig)
     }
 
+    func setAudioReceivingAllowed(_ allowed: Bool) throws {
+        var updatedConfig = config
+        updatedConfig.allowAudioReceiving = allowed
+        try save(updatedConfig)
+    }
+
     func setTitleMode(_ titleMode: TitleMode) throws {
         var updatedConfig = config
         updatedConfig.titleMode = titleMode
+        try save(updatedConfig)
+    }
+
+    func setStatusBarAccountLimit(_ limit: Int) throws {
+        var updatedConfig = config
+        updatedConfig.statusBarAccountLimit = min(max(limit, 1), 10)
+        try save(updatedConfig)
+    }
+
+    func setCalendarDisplay(_ options: CalendarDisplayOptions) throws {
+        var updatedConfig = config
+        updatedConfig.calendarDisplay = options
         try save(updatedConfig)
     }
 

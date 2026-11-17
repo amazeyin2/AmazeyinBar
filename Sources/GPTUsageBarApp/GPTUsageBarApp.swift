@@ -6,12 +6,16 @@ struct GPTUsageBarApp: App {
     @StateObject private var configStore = ConfigStore()
     @StateObject private var usageStore: UsageStore
     @StateObject private var webhookStore: WebhookStore
+    @StateObject private var audioReceiver: LANAudioReceiver
+    @StateObject private var calendarStore: CalendarStore
 
     init() {
         let configStore = ConfigStore()
         _configStore = StateObject(wrappedValue: configStore)
         _usageStore = StateObject(wrappedValue: UsageStore(configStore: configStore))
         _webhookStore = StateObject(wrappedValue: WebhookStore(configStore: configStore))
+        _audioReceiver = StateObject(wrappedValue: LANAudioReceiver(configStore: configStore))
+        _calendarStore = StateObject(wrappedValue: CalendarStore(appSupportDirectory: configStore.appSupportDirectory))
         NSApplication.shared.setActivationPolicy(.accessory)
     }
 
@@ -21,9 +25,13 @@ struct GPTUsageBarApp: App {
                 .environmentObject(configStore)
                 .environmentObject(usageStore)
                 .environmentObject(webhookStore)
+                .environmentObject(audioReceiver)
+                .environmentObject(calendarStore)
         } label: {
             StatusBarLabelView()
+                .environmentObject(configStore)
                 .environmentObject(usageStore)
+                .environmentObject(calendarStore)
         }
         .menuBarExtraStyle(.window)
 
@@ -37,17 +45,18 @@ struct GPTUsageBarApp: App {
 }
 
 private struct StatusBarLabelView: View {
+    @EnvironmentObject private var configStore: ConfigStore
     @EnvironmentObject private var usageStore: UsageStore
+    @EnvironmentObject private var calendarStore: CalendarStore
 
     var body: some View {
-        let items = usageStore.statusUsageItems(limit: 2)
-        let hiddenCount = usageStore.hiddenStatusRingCount(limit: 2)
+        let limit = configStore.config.effectiveStatusBarAccountLimit
+        let items = usageStore.statusUsageItems(limit: limit)
+        let hiddenCount = usageStore.hiddenStatusRingCount(limit: limit)
+        let dateSpacing = items.isEmpty ? "" : String(repeating: "\u{00A0}", count: 4)
 
-        if items.isEmpty {
-            Text("GPT")
-                .font(.system(size: 12, weight: .semibold))
-        } else {
-            HStack(spacing: 4) {
+        HStack(spacing: 6) {
+            if !items.isEmpty {
                 Image(nsImage: StatusBarRenderer.render(items: items))
                     .interpolation(.high)
                     .antialiased(true)
@@ -57,9 +66,15 @@ private struct StatusBarLabelView: View {
                         .font(.system(size: 10, weight: .semibold, design: .rounded))
                         .foregroundStyle(.secondary)
                 }
+            } else {
+                Text("GPT")
+                    .font(.system(size: 12, weight: .semibold))
             }
-            .fixedSize()
+            Text(verbatim: dateSpacing + CalendarDateInfo.statusDate(calendarStore.today))
+                .font(.system(size: 11, weight: .semibold))
+                .lineLimit(1)
         }
+        .fixedSize()
     }
 }
 
@@ -124,6 +139,9 @@ private enum StatusBarRenderer {
     private static func ringColor(for item: StatusUsageItem) -> NSColor {
         if item.hasError {
             return NSColor(calibratedRed: 0.95, green: 0.30, blue: 0.30, alpha: 1)
+        }
+        if (item.utilization ?? 0) >= 90 {
+            return NSColor(calibratedRed: 0.96, green: 0.70, blue: 0.12, alpha: 1)
         }
         switch item.window {
         case .fiveHour:
