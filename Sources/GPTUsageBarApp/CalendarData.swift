@@ -14,6 +14,26 @@ struct ChineseHoliday: Codable {
     let isOffDay: Bool
 }
 
+enum CalendarEventCreationError: LocalizedError {
+    case accessDenied
+    case noDefaultCalendar
+    case emptyTitle
+    case invalidTimeRange
+
+    var errorDescription: String? {
+        switch self {
+        case .accessDenied:
+            return "请在系统设置中允许 AmazeyinBar 访问日历。"
+        case .noDefaultCalendar:
+            return "没有可写入的默认日历，请先在系统日历中设置默认日历。"
+        case .emptyTitle:
+            return "请输入日程标题。"
+        case .invalidTimeRange:
+            return "结束时间必须晚于开始时间。"
+        }
+    }
+}
+
 enum CalendarDateInfo {
     static let locale = Locale(identifier: "zh_CN")
     static let chineseTimezone = TimeZone(identifier: "Asia/Shanghai")!
@@ -145,9 +165,16 @@ final class CalendarStore: ObservableObject {
     @Published var selectedDate = Calendar.current.startOfDay(for: .now) {
         didSet { loadEvents() }
     }
-    @Published var displayedMonth = Calendar.current.startOfDay(for: .now)
+    @Published var displayedMonth = Calendar.current.startOfDay(for: .now) {
+        didSet {
+            if !Calendar.current.isDate(displayedMonth, equalTo: oldValue, toGranularity: .month) {
+                loadVisibleEventDays()
+            }
+        }
+    }
     @Published private(set) var holidays: [String: ChineseHoliday] = [:]
     @Published private(set) var events: [CalendarEventSummary] = []
+    @Published private(set) var visibleEventDayKeys: Set<String> = []
     @Published private(set) var calendarAccess: EKAuthorizationStatus = EKEventStore.authorizationStatus(for: .event)
 
     private let eventStore = EKEventStore()
@@ -184,7 +211,10 @@ final class CalendarStore: ObservableObject {
 
     @objc private func timeDidChange(_ notification: Notification) { updateToday() }
 
-    @objc private func eventsDidChange(_ notification: Notification) { loadEvents() }
+    @objc private func eventsDidChange(_ notification: Notification) {
+        loadEvents()
+        loadVisibleEventDays()
+    }
 
     func updateToday() {
         let current = Calendar.current.startOfDay(for: .now)
@@ -215,20 +245,66 @@ final class CalendarStore: ObservableObject {
         updateToday()
         Task { await loadHolidays(around: displayedMonth) }
         eventsEnabled = showEvents
-        guard showEvents else { events = []; return }
+        guard showEvents else {
+            events = []
+            visibleEventDayKeys = []
+            return
+        }
         calendarAccess = EKEventStore.authorizationStatus(for: .event)
         if calendarAccess == .notDetermined {
             _ = try? await eventStore.requestFullAccessToEvents()
             calendarAccess = EKEventStore.authorizationStatus(for: .event)
         }
         loadEvents()
+        loadVisibleEventDays()
     }
 
     func refreshEvents(showEvents: Bool) {
-        if showEvents { loadEvents() } else { events = [] }
+        eventsEnabled = showEvents
+        loadEvents()
+        loadVisibleEventDays()
+    }
+
+    func createEvent(title: String, start: Date, end: Date, isAllDay: Bool) async throws {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { throw CalendarEventCreationError.emptyTitle }
+
+        calendarAccess = EKEventStore.authorizationStatus(for: .event)
+        if calendarAccess == .notDetermined {
+            _ = try await eventStore.requestFullAccessToEvents()
+            calendarAccess = EKEventStore.authorizationStatus(for: .event)
+        }
+        guard calendarAccess == .fullAccess || calendarAccess == .writeOnly else {
+            throw CalendarEventCreationError.accessDenied
+        }
+        guard let defaultCalendar = eventStore.defaultCalendarForNewEvents else {
+            throw CalendarEventCreationError.noDefaultCalendar
+        }
+
+        let eventStart = isAllDay ? Calendar.current.startOfDay(for: start) : start
+        let eventEnd = isAllDay
+            ? Calendar.current.date(byAdding: .day, value: 1, to: eventStart) ?? eventStart
+            : end
+        guard eventEnd > eventStart else { throw CalendarEventCreationError.invalidTimeRange }
+
+        let event = EKEvent(eventStore: eventStore)
+        event.calendar = defaultCalendar
+        event.title = trimmedTitle
+        event.startDate = eventStart
+        event.endDate = eventEnd
+        event.isAllDay = isAllDay
+        try eventStore.save(event, span: .thisEvent)
+
+        displayedMonth = eventStart
+        selectedDate = Calendar.current.startOfDay(for: eventStart)
+        loadVisibleEventDays()
     }
 
     func holiday(for date: Date) -> ChineseHoliday? { holidays[CalendarDateInfo.dayKey(date)] }
+
+    func hasVisibleEvent(on date: Date) -> Bool {
+        visibleEventDayKeys.contains(CalendarDateInfo.dayKey(date))
+    }
 
     func nextHoliday(from date: Date) -> (name: String, days: Int)? {
         let calendar = Calendar.current
@@ -248,6 +324,32 @@ final class CalendarStore: ObservableObject {
         events = eventStore.events(matching: predicate)
             .filter { $0.endDate > start && $0.startDate < end }
             .map { CalendarEventSummary(id: $0.eventIdentifier ?? UUID().uuidString, title: $0.title ?? "未命名日程", start: $0.startDate, allDay: $0.isAllDay) }
+    }
+
+    private func loadVisibleEventDays() {
+        guard eventsEnabled, calendarAccess == .fullAccess else {
+            visibleEventDayKeys = []
+            return
+        }
+        let visibleDays = CalendarDateInfo.monthDays(containing: displayedMonth)
+        guard let start = visibleDays.first,
+              let last = visibleDays.last,
+              let end = Calendar.current.date(byAdding: .day, value: 1, to: last) else {
+            visibleEventDayKeys = []
+            return
+        }
+
+        let predicate = eventStore.predicateForEvents(withStart: start, end: end, calendars: nil)
+        var dayKeys: Set<String> = []
+        for event in eventStore.events(matching: predicate) where event.endDate > start && event.startDate < end {
+            var day = Calendar.current.startOfDay(for: max(event.startDate, start))
+            while day < event.endDate && day < end {
+                dayKeys.insert(CalendarDateInfo.dayKey(day))
+                guard let nextDay = Calendar.current.date(byAdding: .day, value: 1, to: day) else { break }
+                day = nextDay
+            }
+        }
+        visibleEventDayKeys = dayKeys
     }
 
     private func loadHolidays(around date: Date) async {

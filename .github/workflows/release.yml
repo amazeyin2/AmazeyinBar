@@ -53,6 +53,9 @@ jobs:
 
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
           echo "release_name=$RELEASE_NAME" >> "$GITHUB_OUTPUT"
+          if [ -f "docs/releases/${TAG_NAME}.md" ]; then
+            echo "body_path=docs/releases/${TAG_NAME}.md" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Create or update release
         uses: softprops/action-gh-release@v2
@@ -60,6 +63,7 @@ jobs:
           tag_name: ${{ steps.meta.outputs.tag_name }}
           name: ${{ steps.meta.outputs.release_name }}
           files: dist/AmazeyinBar-macos.zip
+          body_path: ${{ steps.meta.outputs.body_path }}
           generate_release_notes: true
           draft: false
           prerelease: false

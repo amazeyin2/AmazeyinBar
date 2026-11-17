@@ -80,6 +80,8 @@ struct CalendarPanelView: View {
         let festival = options.festivalsAndTerms ? CalendarDateInfo.festival(for: date) : nil
         let term = options.festivalsAndTerms ? CalendarDateInfo.solarTerm(for: date) : nil
         let subtitle = holiday?.name ?? festival ?? term ?? (options.lunar ? CalendarDateInfo.lunarText(for: date) : "")
+        let isFutureDay = Calendar.current.startOfDay(for: date) > store.today
+        let showsRedDot = isFutureDay && (holiday?.isOffDay == true || (options.systemEvents && store.hasVisibleEvent(on: date)))
 
         return Button {
             store.selectedDate = date
@@ -95,15 +97,29 @@ struct CalendarPanelView: View {
                 if holiday?.isOffDay == false {
                     Text("班").font(.system(size: 8, weight: .bold))
                 }
+                if showsRedDot {
+                    Circle()
+                        .fill(Color(red: 0.88, green: 0.16, blue: 0.14))
+                        .frame(width: 5, height: 5)
+                }
             }
             .foregroundStyle(!sameMonth ? Color.gray : today ? calendarBlue : calendarInk)
             .frame(maxWidth: .infinity)
-            .frame(height: 40)
+            .frame(height: 46)
             .background(selected ? Color(red: 0.81, green: 0.85, blue: 0.92) : sameMonth ? Color(red: 0.88, green: 0.88, blue: 0.87) : Color.clear,
                         in: RoundedRectangle(cornerRadius: 9))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(CalendarDateInfo.dayKey(date)) \(subtitle)")
+        .contextMenu {
+            Button {
+                store.selectedDate = date
+                if !sameMonth { store.displayedMonth = date; store.changeMonth(by: 0) }
+                CalendarEventWindowController.shared.show(for: date, store: store)
+            } label: {
+                Label("添加日程", systemImage: "calendar.badge.plus")
+            }
+        }
     }
 
     private var selectedDayDetails: some View {

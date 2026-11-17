@@ -141,7 +141,8 @@ enum Sub2APIAdminError: LocalizedError {
 }
 
 private enum Sub2APIAdminKeychain {
-    private static let service = "com.amazeyin.AmazeyinBar.sub2api-admin"
+    private static let service = "com.amazeyin.tools.bar"
+    private static let legacyService = "com.amazeyin.AmazeyinBar.sub2api-admin"
 
     static func save(apiKey: String, for baseURL: String) throws {
         let account = try Sub2APIAdminService.normalizedBaseURL(baseURL)
@@ -164,6 +165,19 @@ private enum Sub2APIAdminKeychain {
 
     static func apiKey(for baseURL: String) throws -> String {
         let account = try Sub2APIAdminService.normalizedBaseURL(baseURL)
+        if let key = try readAPIKey(for: account, service: service) {
+            return key
+        }
+        guard let key = try readAPIKey(for: account, service: legacyService) else {
+            throw Sub2APIAdminError.missingAPIKey
+        }
+
+        // Keep the old item until the new one is confirmed usable.
+        try? save(apiKey: key, for: account)
+        return key
+    }
+
+    private static func readAPIKey(for account: String, service: String) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -174,8 +188,8 @@ private enum Sub2APIAdminKeychain {
 
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data, let key = String(data: data, encoding: .utf8) else {
-            if status == errSecItemNotFound { throw Sub2APIAdminError.missingAPIKey }
             throw Sub2APIAdminError.keychainError(status)
         }
         return key
